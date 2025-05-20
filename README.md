@@ -61,15 +61,17 @@ The model achieved the following performance on the test set (update with your a
 
 Intrusion Detection System (IDS) Results
 ======================================
-Accuracy:  1.0000
-Precision: 1.0000
-Recall:    1.0000
-F1-Score:  1.0000
+Accuracy:  0.9297
+Precision: 0.9986
+Recall:    0.9140
+F1-Score:  0.9544
+AUC Score: 0.9777
 
 Confusion Matrix:
 [[True Normal  False Attack]
  [False Normal True Attack]]
-[[22544]]
+[[ 60271    322]
+ [ 21546 228890]]
 
 Methodology
 
