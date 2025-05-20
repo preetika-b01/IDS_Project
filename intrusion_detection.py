@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 import lightgbm as lgb
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, roc_curve, roc_auc_score
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.model_selection import train_test_split
 import warnings
@@ -30,7 +30,7 @@ def load_data(train_path='KDDTrain+.txt', test_path='KDDTest+.txt'):
 # Preprocess the data: encode categorical features, handle missing values, and scale numerical features
 def preprocess_data(train_data, test_data):
     combined_data = pd.concat([train_data, test_data], axis=0)
-    combined_data['label'] = combined_data['label'].astype(str).str.rstrip('.')
+    combined_data['label'] = combined_data['label'].astype(str).str.rstrip('.').str.lower().str.strip()
 
     categorical_cols = ['protocol_type', 'service', 'flag']
     label_encoders = {}
@@ -44,6 +44,9 @@ def preprocess_data(train_data, test_data):
 
     train_data['label'] = train_data['label'].apply(lambda x: 0 if x == 'normal' else 1)
     test_data['label'] = test_data['label'].apply(lambda x: 0 if x == 'normal' else 1)
+
+    print("Label distribution in train_data after mapping:", train_data['label'].value_counts())
+    print("Label distribution in test_data after mapping:", test_data['label'].value_counts())
 
     X_train = train_data.drop('label', axis=1)
     y_train = train_data['label']
@@ -100,7 +103,7 @@ def bat_algorithm(X, y, selected_indices, n_features, n_bats=10, max_iter=10):
             population[i, flip_indices] = 1 - population[i, flip_indices]
     return best_solution.astype(bool)
 
-# Train ensemble model with LightGBM and Random Forest
+# Train ensemble model with LightGBM and Random Forest, and return probability scores
 def train_ensemble_model(X_train, X_test, y_train, y_test, selected_features):
     X_train_selected = X_train[:, selected_features]
     X_test_selected = X_test[:, selected_features]
@@ -111,21 +114,31 @@ def train_ensemble_model(X_train, X_test, y_train, y_test, selected_features):
         'boosting_type': 'gbdt',
         'num_leaves': 31,
         'learning_rate': 0.05,
-        'feature_fraction': 0.9
+        'feature_fraction': 0.9,
+        'force_row_wise': True  # To suppress the LightGBM warning
     }
     lgb_model = lgb.train(params, lgb_train, num_boost_round=100)
     rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
     rf_model.fit(X_train_selected, y_train)
-    lgb_pred = lgb_model.predict(X_test_selected)
-    lgb_pred = (lgb_pred > 0.5).astype(int)
+
+    # Get probability scores for ROC curve and AUC
+    lgb_probs = lgb_model.predict(X_test_selected)  # LightGBM outputs probabilities directly
+    rf_probs = rf_model.predict_proba(X_test_selected)[:, 1]  # Random Forest probabilities for class 1
+    ensemble_probs = (lgb_probs + rf_probs) / 2  # Average probabilities from both models
+
+    # Binary predictions for other metrics
+    lgb_pred = (lgb_probs > 0.5).astype(int)
     rf_pred = rf_model.predict(X_test_selected)
     ensemble_pred = np.array([1 if (lgb_pred[i] + rf_pred[i]) >= 1 else 0 for i in range(len(lgb_pred))])
+
     accuracy = accuracy_score(y_test, ensemble_pred)
     precision = precision_score(y_test, ensemble_pred)
     recall = recall_score(y_test, ensemble_pred)
     f1 = f1_score(y_test, ensemble_pred)
     conf_matrix = confusion_matrix(y_test, ensemble_pred)
-    return accuracy, precision, recall, f1, conf_matrix, lgb_model, rf_model
+    auc_score = roc_auc_score(y_test, ensemble_probs)
+
+    return accuracy, precision, recall, f1, conf_matrix, auc_score, ensemble_probs, lgb_model, rf_model
 
 # Plot confusion matrix and save it
 def plot_confusion_matrix(conf_matrix, output_dir='C:/Users/PREETIKA BHARDWAJ/IDS_Project'):
@@ -136,6 +149,20 @@ def plot_confusion_matrix(conf_matrix, output_dir='C:/Users/PREETIKA BHARDWAJ/ID
     plt.xlabel('Predicted')
     plt.ylabel('Actual')
     plt.savefig(f'{output_dir}/confusion_matrix.png')
+    plt.close()
+
+# Plot ROC curve and save it
+def plot_roc_curve(y_test, y_probs, auc_score, output_dir='C:/Users/PREETIKA BHARDWAJ/IDS_Project'):
+    fpr, tpr, _ = roc_curve(y_test, y_probs)
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='blue', label=f'ROC Curve (AUC = {auc_score:.4f})')
+    plt.plot([0, 1], [0, 1], color='red', linestyle='--', label='Random Classifier')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curve - Intrusion Detection System')
+    plt.legend(loc='lower right')
+    plt.grid(True)
+    plt.savefig(f'{output_dir}/roc_curve.png')
     plt.close()
 
 # Main execution
@@ -154,7 +181,7 @@ def main():
     selected_features = bat_algorithm(X_train, y_train, selected_indices, n_features)
 
     print("Training ensemble model (LightGBM + Random Forest)...\n")
-    accuracy, precision, recall, f1, conf_matrix, lgb_model, rf_model = train_ensemble_model(X_train, X_test, y_train, y_test, selected_features)
+    accuracy, precision, recall, f1, conf_matrix, auc_score, ensemble_probs, lgb_model, rf_model = train_ensemble_model(X_train, X_test, y_train, y_test, selected_features)
 
     # Format and display results
     print("======================================")
@@ -164,6 +191,7 @@ def main():
     print(f"Precision: {precision:.4f}")
     print(f"Recall:    {recall:.4f}")
     print(f"F1-Score:  {f1:.4f}")
+    print(f"AUC Score: {auc_score:.4f}")
     print("\nConfusion Matrix:")
     print("[[True Normal  False Attack]")
     print(f" [False Normal True Attack]]")
@@ -177,6 +205,7 @@ def main():
         f.write(f"Precision: {precision:.4f}\n")
         f.write(f"Recall:    {recall:.4f}\n")
         f.write(f"F1-Score:  {f1:.4f}\n")
+        f.write(f"AUC Score: {auc_score:.4f}\n")
         f.write("\nConfusion Matrix:\n")
         f.write("[[True Normal  False Attack]\n")
         f.write(" [False Normal True Attack]]\n")
@@ -186,6 +215,11 @@ def main():
     print("\nGenerating confusion matrix plot...")
     plot_confusion_matrix(conf_matrix)
     print("Confusion matrix plot saved as 'confusion_matrix.png' in the project directory.")
+
+    # Plot and save ROC curve
+    print("\nGenerating ROC curve plot...")
+    plot_roc_curve(y_test, ensemble_probs, auc_score)
+    print("ROC curve plot saved as 'roc_curve.png' in the project directory.")
 
 if __name__ == "__main__":
     main()
